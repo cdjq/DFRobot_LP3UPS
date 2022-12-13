@@ -1,7 +1,7 @@
 /*!
  * @file  LPUPS.ino
- * @brief  
- * @details  
+ * @brief  LPUPS 通过 usb-hid 将电池信息上报到电脑
+ * @details  通过i2c读取UPS上的电池信息，将这些电池信息通过usb-hid上报到电脑
  * @copyright  Copyright (c) 2010 DFRobot Co.Ltd (http://www.dfrobot.com)
  * @license  The MIT License (MIT)
  * @author  [qsjhyy](yihuan.huang@dfrobot.com)
@@ -16,14 +16,16 @@ DFRobot_LPUPS_I2C LPUPS(&Wire, /*I2CAddr*/ UPS_I2C_ADDRESS);
 
 #define DATA_LEN_MAX   0X22U
 uint8_t regBuf[DATA_LEN_MAX] = {0};
-sChargerStatus0_t chargerStatus0;
-sChargerStatus1_t chargerStatus1;
-sProchotStatus0_t prochotStatus0;
-sProchotStatus1_t prochotStatus1;
+DFRobot_LPUPS_I2C::sChargerStatus0_t chargerStatus0;
+DFRobot_LPUPS_I2C::sChargerStatus1_t chargerStatus1;
+DFRobot_LPUPS_I2C::sProchotStatus0_t prochotStatus0;
+DFRobot_LPUPS_I2C::sProchotStatus1_t prochotStatus1;
 uint16_t systemPower = 0, inputVoltage = 0;
 uint16_t dischargeCurrent = 0, chargeCurrent = 0;
 uint16_t CMPINVoltage = 0, inputCurrent = 0;
 uint16_t batteryVoltage = 0, systemVoltage = 0;
+bool bCharging, bACPresent, bDischarging;   // 正在充电, 有交流电提供, 正在放电
+
 char outputBuf[512];   // 打印缓冲区
 
 #define MIN_UPDATE_INTERVAL   26   // USB-HID 最小上报间隔
@@ -67,8 +69,9 @@ const byte bCapacityGranularity1 = 1; // Battery capacity granularity between lo
 const byte bCapacityGranularity2 = 1; // Battery capacity granularity between warning and full.
 byte iFullChargeCapacity = 100;
 
-byte iRemaining =0, iPrevRemaining=0;
+byte iRemaining =0, iPrevRemaining=100;
 int iRes=0;
+
 
 void setup(void)
 {
@@ -81,13 +84,15 @@ void setup(void)
   }
   Serial.println("Begin ok!");
 
+  // 初始化 UPS 指示灯
   pinMode(9, OUTPUT);   // 电量指示LED, 绿色
   pinMode(10, OUTPUT);   // 电量指示LED, 红色
   pinMode(13, OUTPUT);   // 输出刷新1秒, 表示arduino周期正在运行, 蓝色
 
-  initPowerDevice();   // HIDPowerDevice 的初始化
-
+  // HIDPowerDevice 的初始化
+  initPowerDevice();
 }
+
 
 void loop()
 {
@@ -95,41 +100,50 @@ void loop()
   printChargeData();
 
   /*********** 计量单位，测量单位 ****************************/
-  bool bCharging, bACPresent, bDischarging;   // 正在充电, 有交流电提供, 正在放电
-  if(regBuf[CS32_I2C_CHARGER_STATUS_REG + 1] >> 7) {   // 检测是否有外部供电
+  /**
+   * 电池电压范围: 9.216V ~ 12.2V, 为了让电池在极限值保持较好稳定: 
+   * 拟 电池电压范围为 9.4V ~ 12.0 V 时, 对应电池电量 0 ~ 100.
+   * 注: 有兴趣可以通过 dischargeCurrent 对突变的电压进行修正, 以使电池电量更加准确.
+   */
+  iRemaining = (((float)batteryVoltage - 9400) / (12000 - 9300)) * 100;
+  if(100 < iRemaining) {
+    iRemaining = 100;
+  }
+
+  // 请确保使用 LattePanda 专用充电器, 并将充电器连接在 UPS 上面(连接在LP上面将)
+  if(chargerStatus1.ac_stat) {   // 检测是否存在外部供电
     bACPresent = true;
-    if(regBuf[CS32_I2C_CHARGER_STATUS_REG + 1] & 0x3F) {   // 检测是否正在充电
+    if(64 < chargeCurrent) {   // 检测是否有充电电流, 因精度问题, 电流小于64视为已充满
       bCharging = true;
     } else {
       bCharging = false;
     }
     bDischarging = false;
   } else {
+    if(iPrevRemaining < iRemaining) {
+      iRemaining = iPrevRemaining;
+    }
+
     bACPresent = false;
     bCharging = false;
-    if(regBuf[CS32_I2C_CHARGER_STATUS_REG + 1] & 0x3F) {   // 检测是否正在放电
+    if(dischargeCurrent) {   // 检测是否有放电电流
       bDischarging = true;
     } else {
       bDischarging = false;
     }
   }
 
-  iRemaining = regBuf[CS32_I2C_ADC_VBAT_REG + 1] * 100 / 255;
   iRunTimeToEmpty = (float)iAvgTimeToEmpty*iRemaining/100;
-  Serial.print("iRemaining = ");
-  Serial.println(iRemaining);
-  Serial.print("iRunTimeToEmpty = ");
-  Serial.println(iRunTimeToEmpty);
-  iRemaining = 99;
-  iRunTimeToEmpty = 3600;
 
+  // 根据得到的电量值 iRemaining , 调整电量指示灯
   digitalWrite(9, LOW);   // 打开 绿色 LED灯;
   digitalWrite(10, LOW);   // 打开 红色 LED灯;
-  if (( iRemaining >= 0)&&( iRemaining <= 25)){   // 25%-红灯亮-0%
+
+  if (iRemaining <= 25) {   // 0% - 红灯亮 - 25%
     digitalWrite(9, HIGH);   // 关闭 绿色 LED灯;
-  } else if (( iRemaining > 25) && ( iRemaining < 75)){   // 75%-红绿灯都亮-25%
-  
-  } else if (( iRemaining >= 75) && ( iRemaining <= 100)){   // 100%-绿灯亮-75%
+  } else if (( iRemaining > 25) && ( iRemaining < 75)) {   // 25% - 红绿灯都亮 - 75%
+
+  } else if ( iRemaining >= 75 ) {   // 75% - 绿灯亮 - 100%
     digitalWrite(10, HIGH);   // 关闭 红色 LED灯;
   }
 
@@ -144,7 +158,6 @@ void loop()
   iIntTimer++;
   digitalWrite(13, HIGH);   // 关掉 蓝色 LED灯;
 
-  /************ 检查一下我们是否还在线 ******************/
   /************ 批量发送或中断 ***********************/
   if((iPresentStatus != iPreviousStatus) || (iRemaining != iPrevRemaining) || 
      (iRunTimeToEmpty != iPrevRunTimeToEmpty) || (iIntTimer > MIN_UPDATE_INTERVAL) ) {
@@ -167,6 +180,7 @@ void loop()
     iPrevRunTimeToEmpty = iRunTimeToEmpty;   // 保存新的预估电池用空时间计数
   }
 
+  /************ 串口打印上报的电量 以及 上报操作结果 ******************/
   Serial.print("iRemaining = ");   // 剩余电量的百分比
   Serial.println(iRemaining);
   Serial.print("iRunTimeToEmpty = ");   // 多久用完剩余电量
@@ -241,6 +255,9 @@ void printChargeData(void)
   systemPower = regBuf[CS32_I2C_ADC_PSYS_REG] * 12;
   // VBUS: Full range: 3.2 V - 19.52 V, LSB: 64 mV
   inputVoltage = 3200 + regBuf[CS32_I2C_ADC_VBUS_REG] * 64;
+  if(3200 == inputVoltage) {
+    inputVoltage = 0;
+  }
   // IDCHG: Full range: 32.512 A, LSB: 256 mA
   dischargeCurrent = regBuf[CS32_I2C_ADC_IDCHG_REG] * 256;
   // ICHG: Full range 8.128 A, LSB: 64 mA
@@ -251,8 +268,14 @@ void printChargeData(void)
   inputCurrent = regBuf[CS32_I2C_ADC_IIN_REG] * 50;
   // VBAT: Full range : 2.88 V - 19.2 V, LSB 64 mV
   batteryVoltage = 2880 + regBuf[CS32_I2C_ADC_VBAT_REG] * 64;
+  if(2880 == batteryVoltage) {
+    batteryVoltage = 0;
+  }
   // VSYS: Full range: 2.88 V - 19.2 V, LSB: 64 mV
   systemVoltage = 2880 + regBuf[CS32_I2C_ADC_VSYS_REG] * 64;
+  if(2880 == systemVoltage) {
+    systemVoltage = 0;
+  }
   memset(outputBuf, 0, sizeof(outputBuf));
   sprintf(outputBuf, "8-bit Digital Output of System Power = %u mV\r\n"
                      "8-bit Digital Output of Input Voltage = %u mV\r\n"
@@ -298,8 +321,7 @@ void flashReportedData(void)
     else
       bitClear(iPresentStatus, PRESENTSTATUS_RTLEXPIRED);
 
-  }
-  else {
+  } else {
     bitClear(iPresentStatus,PRESENTSTATUS_DISCHARGING);
     bitClear(iPresentStatus, PRESENTSTATUS_RTLEXPIRED);   // 充电中 清相关标志位
   }
@@ -308,8 +330,7 @@ void flashReportedData(void)
   if(iDelayBe4ShutDown > 0 ) {
       bitSet(iPresentStatus, PRESENTSTATUS_SHUTDOWNREQ);
       Serial.println("shutdown requested");
-  }
-  else
+  } else
     bitClear(iPresentStatus, PRESENTSTATUS_SHUTDOWNREQ);
 
   // 即将关机
@@ -317,8 +338,7 @@ void flashReportedData(void)
      (iPresentStatus & (1 << PRESENTSTATUS_RTLEXPIRED))) {
     bitSet(iPresentStatus, PRESENTSTATUS_SHUTDOWNIMNT);   // - 即将关机
     Serial.println("shutdown imminent");
-  }
-  else
+  } else
     bitClear(iPresentStatus, PRESENTSTATUS_SHUTDOWNIMNT);
 
   bitSet(iPresentStatus ,PRESENTSTATUS_BATTPRESENT);   // - 电源 BATT

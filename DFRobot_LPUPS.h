@@ -1,7 +1,7 @@
 /*!
  * @file  DFRobot_LPUPS.h
  * @brief  Define infrastructure of DFRobot_LPUPS class
- * @details  
+ * @details  定义相关宏和函数
  * @copyright  Copyright (c) 2010 DFRobot Co.Ltd (http://www.dfrobot.com)
  * @license  The MIT License (MIT)
  * @author  [qsjhyy](yihuan.huang@dfrobot.com)
@@ -225,7 +225,6 @@ protected:
 
 private:
   // Private variables
-  sSensorStatus_t LPUPSStatus;
 };
 
 /************************** Init and read/write of I2C and SPI interfaces ******************************/

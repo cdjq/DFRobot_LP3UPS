@@ -1,6 +1,8 @@
 # DFRobot_LPUPS
 * [English Version](./README.md)
 
+一款LP的UPS，为LP的电源设备提供对应驱动。
+
 ![产品实物图](./resources/images/LPUPS.png)
 
 
@@ -20,7 +22,7 @@
 
 ## 概述
 
-* 
+* 通过I2C获取LPUPS的电池信息, 通过USB-HID将这些电池信息上报到LP。
 
 
 ## 库安装
@@ -44,6 +46,14 @@
    * @retval -2 ERR_IC_VERSION
    */
   virtual int begin(void);
+
+  /**
+   * @fn getChipData
+   * @brief 获取芯片数据
+   * @param regBuf 
+   * @return None
+   */
+  void getChipData(uint8_t * regBuf);
 
 ```
 

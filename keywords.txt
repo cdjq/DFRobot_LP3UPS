@@ -14,15 +14,13 @@ DFRobot_LPUPS_I2C	KEYWORD1
 #######################################
 
 begin	KEYWORD2
+getChipData	KEYWORD2
+
 
 #######################################
 # Instances (KEYWORD3)
 #######################################
 
-mode	KEYWORD3
-
 #######################################
 # Constants (LITERAL1)
 #######################################
-
-LPUPS_COMMAND_NOP	LITERAL1
